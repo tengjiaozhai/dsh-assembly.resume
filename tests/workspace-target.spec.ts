@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { WorkspaceView } from '@deepseek-ai/dsh-client-runtime/client'
+import type { WorkspaceView } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import { openDshTargetSession } from '../src/client/workspace-target.ts'
 
 function workspace(path: string, id: string): WorkspaceView {

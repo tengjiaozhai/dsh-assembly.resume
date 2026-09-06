@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { realpath, stat } from 'node:fs/promises'
 import { Context, Service } from '@deepseek-ai/cordis'
-import { settingsNamespace } from '@deepseek-ai/dsh-settings'
+import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import s from '@deepseek-ai/schemastery'
 import type { Agent, AgentHandle, AgentOptions, AgentRegistry } from '@deepseek-ai/dsh-agent'
 import { SessionId } from '@deepseek-ai/dsh-session'
@@ -57,7 +57,7 @@ declare module '@deepseek-ai/cordis' {
 }
 
 /** Settings namespace that enrolls this plugin's card in the Plugins configuration surface. */
-export const SESSION_RESUME_SETTINGS_NAMESPACE = settingsNamespace('session-resume')
+export const SESSION_RESUME_SETTINGS_NAMESPACE = 'session-resume' as SettingsNamespace
 
 // The card has no mutable preference yet; the registered namespace is the
 // Plugins surface's discovery mechanism for independently shipped cards.

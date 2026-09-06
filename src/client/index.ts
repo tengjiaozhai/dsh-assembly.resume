@@ -1,4 +1,7 @@
-import type { ClientContext, IWorkspaces, ISessions } from '@deepseek-ai/dsh-client-runtime/client'
+import type { Context } from '@deepseek-ai/cordis'
+import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { IWorkspaces } from '@deepseek-ai/dsh-api-workspace-controller/client'
+import type { UiWorkspace } from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { createElement } from 'react'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
@@ -6,6 +9,7 @@ import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '../remote.ts'
 import { TYPERT_REMOTE, type SessionResumeRemote } from '../remote.ts'
 import type { ExternalProvider, DiscoveredExternalSession, TakeOverResult } from '../types.ts'
@@ -23,14 +27,15 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 }
 
 /** Services required by the independent browser half. */
-export const inject = ['slots', 'locale', 'remote', 'sessions', 'workspaces']
+export const inject = ['slots', 'locale', 'remote', 'sessions', 'workspaces', 'uiWorkspace']
 
-function createSectionProps(ctx: ClientContext) {
+function createSectionProps(ctx: Context) {
   const remote = (): SessionResumeRemote => getSessionResumeRemote(ctx)
   const sessions = ctx.get('sessions') as unknown as Pick<ISessions, 'open'> & {
     create(options: { workspaceId?: string; sessionId?: SessionId }): Promise<SessionId>
   }
   const workspaces = ctx.get('workspaces') as IWorkspaces
+  const uiWorkspace = ctx.get('uiWorkspace') as UiWorkspace
   return {
     discover: async (input: { provider: ExternalProvider; query?: string }): Promise<DiscoveredExternalSession[]> => {
       const result = await remote().discover(input)
@@ -42,7 +47,7 @@ function createSectionProps(ctx: ClientContext) {
       if (!result.ok) throw new Error(result.error.message)
       return result.value
     },
-    chooseWorkspace: (): Promise<string | null> => workspaces.pickDirectory(),
+    chooseWorkspace: (): Promise<string | null> => uiWorkspace.pickDirectory(),
     openTarget: (targetSessionId: SessionId, projectPath: string | undefined): Promise<OpenDshTargetResult> => {
       return openDshTargetSession(workspaces, sessions, targetSessionId, projectPath)
     },
@@ -50,7 +55,7 @@ function createSectionProps(ctx: ClientContext) {
 }
 
 /** Mount the Remote contribution and register the native-session Plugins card. */
-export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
+export async function apply(ctx: Context): Promise<() => Promise<void>> {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'session-resume: dictionaries')
   const disposeRemote = await ctx.remote.$mount(TYPERT_REMOTE)
   function ResumeCard(props: PropsRuntime<'settings.plugin.item'> & PropsLocale<'sessionResume'>) {

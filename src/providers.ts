@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto'
-import { readFile, stat } from 'node:fs/promises'
+import { createReadStream } from 'node:fs'
+import { readdir, readFile, stat } from 'node:fs/promises'
+import { join, normalize } from 'node:path'
+import { createInterface } from 'node:readline'
 import {
   discoverNativeSessions,
+  resolveNativeSessionStorage,
   type NativeSessionDiscoveryConfig,
   type NativeSessionSummary,
 } from 'dsh-assembly.core/native-session'
@@ -22,7 +26,8 @@ export class NativeSessionNotFoundError extends Error {
 }
 import type { NativeContentBlock, NativeSemanticEvent, NativeToolCall } from './transcript.ts'
 
-const MAX_FILE_BYTES = 32 * 1024 * 1024
+const CORE_DISCOVERY_MAX_FILE_BYTES = 32 * 1024 * 1024
+const MAX_FILE_BYTES = 128 * 1024 * 1024
 // Bump when the semantic import contract changes so old seeded sessions are not reused.
 const IMPORT_FINGERPRINT_VERSION = '8'
 
@@ -405,12 +410,193 @@ function toDiscoveredExternalSession(session: NativeSessionSummary): DiscoveredE
   }
 }
 
+async function isCodexDelegatedAgentThread(session: NativeSessionSummary): Promise<boolean> {
+  if (!session.firstUserMessage?.trimStart().startsWith('<codex_delegation>')) return false
+  const sourcePath = session.sourcePath
+  const source = createReadStream(sourcePath, { encoding: 'utf8' })
+  const lines = createInterface({ input: source, crlfDelay: Infinity })
+  try {
+    for await (const line of lines) {
+      if (line.trim().length === 0) continue
+      const row = record(JSON.parse(line) as unknown)
+      if (row?.['type'] !== 'session_meta') continue
+      return record(row['payload'])?.['thread_source'] === 'agent_created_thread'
+    }
+  } catch {
+    // Unknown or unreadable metadata must not hide a potentially valid user session.
+  } finally {
+    lines.close()
+    source.destroy()
+  }
+  return false
+}
+
+interface CodexDiscoveryHeader {
+  readonly meta: Record<string, unknown>
+  readonly firstUserMessage?: string
+}
+
+function codexPreviewUserMessage(row: Record<string, unknown>, meta: Record<string, unknown>): string | undefined {
+  const payload = record(row['payload'])
+  if (row['type'] !== 'event_msg' || payload === undefined || isCodexLegacyExecTask(payload, meta)) return undefined
+  if (payload['type'] === 'user_message') {
+    const text = textFromUnknown(payload['message'])
+    return text === undefined ? undefined : codexUserText(text)
+  }
+  const item = record(payload['item'])
+  if (payload['type'] !== 'item_completed' || item?.['type'] !== 'UserMessage') return undefined
+  const text = textFromUnknown(item['content'])
+  return text === undefined ? undefined : codexUserText(text)
+}
+
+async function readCodexDiscoveryHeader(sourcePath: string): Promise<CodexDiscoveryHeader | undefined> {
+  const source = createReadStream(sourcePath, { encoding: 'utf8' })
+  const lines = createInterface({ input: source, crlfDelay: Infinity })
+  let meta: Record<string, unknown> | undefined
+  let firstUserMessage: string | undefined
+  let latestCwd: string | undefined
+  try {
+    for await (const line of lines) {
+      if (line.trim().length === 0) continue
+      if (firstUserMessage !== undefined && !/"type"\s*:\s*"turn_context"/u.test(line.slice(0, 512))) continue
+      let row: Record<string, unknown> | undefined
+      try {
+        row = record(JSON.parse(line) as unknown)
+      } catch {
+        continue
+      }
+      if (row?.['type'] === 'session_meta') meta = record(row['payload'])
+      if (row?.['type'] === 'turn_context') {
+        const cwd = record(row['payload'])?.['cwd']
+        if (typeof cwd === 'string') latestCwd = cwd
+        continue
+      }
+      if (meta === undefined || row === undefined) continue
+      firstUserMessage ??= codexPreviewUserMessage(row, meta)
+    }
+  } catch {
+    return undefined
+  } finally {
+    lines.close()
+    source.destroy()
+  }
+  if (meta === undefined) return undefined
+  const resolvedMeta = latestCwd === undefined ? meta : { ...meta, cwd: latestCwd }
+  return { meta: resolvedMeta, ...(firstUserMessage === undefined ? {} : { firstUserMessage }) }
+}
+
+async function jsonlFilesUnder(root: string): Promise<string[]> {
+  const result: string[] = []
+  const visit = async (directory: string): Promise<void> => {
+    const entries = await readdir(directory, { withFileTypes: true }).catch(() => [])
+    for (const entry of entries) {
+      const path = join(directory, entry.name)
+      if (entry.isDirectory()) await visit(path)
+      else if (entry.isFile() && entry.name.endsWith('.jsonl')) result.push(path)
+    }
+  }
+  await visit(root)
+  return result
+}
+
+async function readCodexIndex(path: string): Promise<Map<string, { title?: string; updatedAt?: string }>> {
+  const entries = new Map<string, { title?: string; updatedAt?: string }>()
+  const source = await readFile(path, 'utf8').catch(() => '')
+  for (const line of source.split(/\r?\n/u)) {
+    if (line.trim().length === 0) continue
+    try {
+      const row = record(JSON.parse(line) as unknown)
+      const id = typeof row?.['id'] === 'string' ? row['id'] : undefined
+      if (id === undefined) continue
+      const title = typeof row?.['thread_name'] === 'string' ? row['thread_name'] : undefined
+      const updatedAt = typeof row?.['updated_at'] === 'string' ? row['updated_at'] : undefined
+      entries.set(id, { ...(title === undefined ? {} : { title }), ...(updatedAt === undefined ? {} : { updatedAt }) })
+    } catch {
+      continue
+    }
+  }
+  return entries
+}
+
+function codexProjectPath(cwd: string, newChatRoot: string): string | undefined {
+  const comparableCwd = normalize(cwd).replaceAll('\\', '/').toLowerCase()
+  const comparableRoot = normalize(newChatRoot).replaceAll('\\', '/').replace(/\/+$/u, '').toLowerCase()
+  if (comparableCwd === comparableRoot || comparableCwd.startsWith(`${comparableRoot}/`)) {
+    const relative = comparableCwd.slice(comparableRoot.length).replace(/^\/+|\/+$/gu, '')
+    if (/^\d{4}-\d{2}-\d{2}(?:\/|$)/u.test(relative)) return undefined
+  }
+  if (/\/appdata\/roaming\/aionui\/aionui\/conversations\/users\//u.test(comparableCwd)) return undefined
+  return cwd
+}
+
+function isCodexSubagentMeta(meta: Record<string, unknown>): boolean {
+  return meta['source'] === 'subAgent'
+    || meta['thread_source'] === 'subagent'
+    || record(meta['source'])?.['subagent'] !== undefined
+}
+
+async function discoverOversizedCodexSessions(input: DiscoverExternalSessionsInput, config: ProviderConfig): Promise<DiscoveredExternalSession[]> {
+  if (input.provider !== undefined && input.provider !== 'codex') return []
+  const roots = resolveNativeSessionStorage(config)
+  const index = await readCodexIndex(roots.codexIndex)
+  const sessions: DiscoveredExternalSession[] = []
+  for (const sourcePath of await jsonlFilesUnder(roots.codexHome)) {
+    const file = await stat(sourcePath).catch(() => undefined)
+    if (file === undefined || file.size <= CORE_DISCOVERY_MAX_FILE_BYTES || file.size > MAX_FILE_BYTES) continue
+    const header = await readCodexDiscoveryHeader(sourcePath)
+    if (header === undefined || isCodexSubagentMeta(header.meta) || header.meta['source'] === 'appServer') continue
+    if (header.meta['thread_source'] === 'agent_created_thread' && header.firstUserMessage?.trimStart().startsWith('<codex_delegation>')) continue
+    const id = typeof header.meta['id'] === 'string'
+      ? header.meta['id']
+      : typeof header.meta['session_id'] === 'string' ? header.meta['session_id'] : undefined
+    const cwd = typeof header.meta['cwd'] === 'string' ? header.meta['cwd'] : undefined
+    if (id === undefined || cwd === undefined) continue
+    const entry = index.get(id)
+    const projectPath = codexProjectPath(cwd, roots.codexNewChatRoot)
+    const title = entry?.title ?? header.firstUserMessage?.slice(0, 80)
+    const updatedAt = entry?.updatedAt ?? file.mtime.toISOString()
+    const session: DiscoveredExternalSession = {
+      provider: 'codex',
+      externalSessionId: id as ExternalSessionId,
+      cwd,
+      ...(projectPath === undefined ? {} : {
+        projectPath,
+        projectPathAvailable: await stat(projectPath).then(value => value.isDirectory(), () => false),
+      }),
+      sourcePath,
+      ...(typeof header.meta['timestamp'] === 'string' ? { createdAt: header.meta['timestamp'] } : {}),
+      updatedAt,
+      ...(title === undefined ? {} : { title }),
+      ...(header.firstUserMessage === undefined ? {} : { firstUserMessage: header.firstUserMessage.slice(0, 400) }),
+      resumable: true,
+    }
+    const query = input.query?.trim().toLowerCase()
+    if (input.cwd !== undefined && normalize(input.cwd) !== normalize(cwd)) continue
+    if (query !== undefined && ![id, title, header.firstUserMessage, cwd].some(value => value?.toLowerCase().includes(query))) continue
+    sessions.push(session)
+  }
+  return sessions
+}
+
 /** Discover native sessions without loading complete transcripts into the API. */
 export async function discoverExternalSessions(input: DiscoverExternalSessionsInput = {}, config: ProviderConfig = {}): Promise<DiscoveredExternalSession[]> {
-  const sessions = await discoverNativeSessions(input, config)
-  return sessions
-    .filter(session => session.provider !== 'codex' || session.codexSource !== 'appServer')
+  const limit = input.limit ?? 100
+  const sessions = await discoverNativeSessions({ ...input, limit: limit + 100 }, config)
+  const visibleSessions = await Promise.all(sessions.map(async (session) => {
+    if (session.provider !== 'codex') return session
+    if (session.codexSource === 'appServer' || await isCodexDelegatedAgentThread(session)) return undefined
+    return session
+  }))
+  const discovered = visibleSessions
+    .filter((session): session is NativeSessionSummary => session !== undefined)
     .map(toDiscoveredExternalSession)
+  const unique = new Map(discovered.map(session => [`${session.provider}\0${session.externalSessionId}`, session]))
+  for (const session of await discoverOversizedCodexSessions(input, config)) {
+    unique.set(`${session.provider}\0${session.externalSessionId}`, session)
+  }
+  return [...unique.values()]
+    .sort((left, right) => (right.updatedAt ?? '').localeCompare(left.updatedAt ?? ''))
+    .slice(0, limit)
 }
 
 /** Read and normalize one selected native transcript. */

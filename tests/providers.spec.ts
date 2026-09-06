@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, utimes, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, truncate, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -48,6 +48,92 @@ describe('native provider discovery', () => {
     ].join('\n'))
 
     await expect(discoverExternalSessions({ provider: 'codex' }, { codexHome: root })).resolves.toEqual([])
+  })
+
+  it('filters delegated Codex child threads without hiding other sessions', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-resume-codex-agent-thread-'))
+    const cwd = join(root, 'workspace')
+    await mkdir(cwd)
+    await writeFile(join(root, 'agent-thread.jsonl'), [
+      JSON.stringify({
+        type: 'session_meta',
+        payload: {
+          session_id: 'codex-agent-thread',
+          cwd,
+          source: 'vscode',
+          thread_source: 'agent_created_thread',
+        },
+      }),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: '<codex_delegation>agent task</codex_delegation>' } }),
+    ].join('\n'))
+    await writeFile(join(root, 'user-thread.jsonl'), [
+      JSON.stringify({
+        type: 'session_meta',
+        payload: {
+          session_id: 'codex-user-thread',
+          cwd,
+          source: 'vscode',
+          thread_source: 'user',
+        },
+      }),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: '<codex_delegation>user-authored text</codex_delegation>' } }),
+    ].join('\n'))
+    await writeFile(join(root, 'normal-agent-created-thread.jsonl'), [
+      JSON.stringify({
+        type: 'session_meta',
+        payload: {
+          session_id: 'codex-normal-agent-created-thread',
+          cwd,
+          source: 'vscode',
+          thread_source: 'agent_created_thread',
+        },
+      }),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: 'normal user task' } }),
+    ].join('\n'))
+
+    await expect(discoverExternalSessions({ provider: 'codex' }, { codexHome: root })).resolves.toEqual([
+      expect.objectContaining({ externalSessionId: 'codex-normal-agent-created-thread' }),
+      expect.objectContaining({ externalSessionId: 'codex-user-thread' }),
+    ])
+  })
+
+  it('discovers normal Codex sessions larger than the core preview limit', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-resume-codex-large-'))
+    const initialCwd = join(root, 'initial-workspace')
+    const latestCwd = join(root, 'latest-workspace')
+    await mkdir(initialCwd)
+    await mkdir(latestCwd)
+    const file = join(root, 'large-session.jsonl')
+    await writeFile(file, [
+      JSON.stringify({
+        type: 'session_meta',
+        payload: {
+          session_id: 'codex-large-user-thread',
+          cwd: initialCwd,
+          source: 'vscode',
+          thread_source: 'user',
+          timestamp: '2026-09-06T00:00:00.000Z',
+        },
+      }),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: 'normal large user session' } }),
+      JSON.stringify({ type: 'turn_context', payload: { cwd: latestCwd } }),
+    ].join('\n') + '\n')
+    await truncate(file, 32 * 1024 * 1024 + 1)
+    await writeFile(join(root, 'session_index.jsonl'), JSON.stringify({
+      id: 'codex-large-user-thread',
+      thread_name: 'Large normal session',
+      updated_at: '2026-09-06T00:01:00.000Z',
+    }) + '\n')
+
+    await expect(discoverExternalSessions({ provider: 'codex' }, { codexHome: root })).resolves.toEqual([
+      expect.objectContaining({
+        externalSessionId: 'codex-large-user-thread',
+        cwd: latestCwd,
+        projectPath: latestCwd,
+        title: 'Large normal session',
+        firstUserMessage: 'normal large user session',
+      }),
+    ])
   })
 
   it('uses completed Codex UserMessage items for safe session previews', async () => {

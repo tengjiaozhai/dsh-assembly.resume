@@ -1,4 +1,4 @@
-import type { IWorkspaces, WorkspaceView } from '@deepseek-ai/dsh-client-runtime/client'
+import type { IWorkspaces, WorkspaceView } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 
 type SessionPort = {

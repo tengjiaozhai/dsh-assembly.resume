@@ -2,7 +2,7 @@ import {
   createAssistantMessage,
   createToolResultMessage,
   createUserMessage,
-  type CallId,
+  type ToolCallId,
   type ContentBlock,
 } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent as DshSessionEvent } from '@deepseek-ai/dsh-session'
@@ -70,6 +70,27 @@ function timeOf(event: NativeSemanticEvent): number {
 
 type SeedEvent = { type: string; seq: number; time: number; data: unknown; surfaceOp?: 'append' }
 
+/** Compact assistant stream records required to reconstruct a settled message. */
+type SeedAssistantStreamRecord =
+  | { readonly type: 'text-chunks'; readonly time0: number; readonly index: number; readonly dt: readonly number[]; readonly texts: readonly string[] }
+  | { readonly type: 'reasoning-chunks'; readonly time0: number; readonly index: number; readonly dt: readonly number[]; readonly texts: readonly string[] }
+  | { readonly type: 'tool-call-chunks'; readonly time0: number; readonly index: number; readonly dt: readonly number[]; readonly id: string; readonly name: string; readonly args: readonly string[] }
+
+function assistantStream(contentBlocks: readonly ContentBlock[], time: number): SeedAssistantStreamRecord[] {
+  return contentBlocks.map((block, index) => {
+    switch (block.type) {
+      case 'text':
+        return { type: 'text-chunks', time0: time, index, dt: [], texts: [block.text] }
+      case 'reasoning':
+        return { type: 'reasoning-chunks', time0: time, index, dt: [], texts: [block.text] }
+      case 'tool-call':
+        return { type: 'tool-call-chunks', time0: time, index, dt: [], id: block.id, name: block.name, args: [block.arguments] }
+      default:
+        throw new Error(`unsupported assistant content block '${(block as { type: string }).type}'`)
+    }
+  })
+}
+
 function append(events: SeedEvent[], type: string, time: number, data: unknown): void {
   events.push({ type, seq: events.length, time, data })
 }
@@ -121,12 +142,17 @@ function appendAssistant(
   const message = createAssistantMessage({
     content: [
       ...visible,
-      ...calls.map(call => ({ type: 'tool-call' as const, id: call.callId as CallId, name: call.name, arguments: call.arguments })),
+      ...calls.map(call => ({ type: 'tool-call' as const, id: call.callId as ToolCallId, name: call.name, arguments: call.arguments })),
     ],
     source: { provider: event.provider, model: event.model },
   })
-  appendSurface(events, 'assistant/message', event.time, { turn, step, message })
-  for (const call of calls) append(events, 'tool/call', event.time, { turn, step, callId: call.callId as CallId, name: call.name, arguments: call.arguments })
+  appendSurface(events, 'assistant/message', event.time, {
+    turn,
+    step,
+    message,
+    stream: assistantStream(message.content, event.time),
+  })
+  for (const call of calls) append(events, 'tool/call', event.time, { turn, step, callId: call.callId as ToolCallId, name: call.name, arguments: call.arguments })
   return callIds
 }
 
@@ -138,7 +164,7 @@ function appendToolResult(
 ): void {
   nonBlank(event.callId, `native tool result '${event.id}' call id`)
   const message = createToolResultMessage({
-    callId: event.callId as CallId,
+    callId: event.callId as ToolCallId,
     content: content(event.content, `native tool result '${event.id}'`),
     isError: event.isError ?? false,
   })

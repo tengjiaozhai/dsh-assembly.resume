@@ -19,7 +19,13 @@ describe('buildDshSeed', () => {
       'turn/start', 'step/start', 'user/message', 'assistant/message', 'step/end', 'turn/end',
     ])
     expect(seed[2]).toMatchObject({ surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: 'inspect the repo' }] } })
-    expect(seed[3]).toMatchObject({ surfaceOp: 'append', data: { message: { role: 'assistant', source: { kind: 'model', provider: 'codex-native', model: 'codex-model' } } } })
+    expect(seed[3]).toMatchObject({
+      surfaceOp: 'append',
+      data: {
+        message: { role: 'assistant', source: { kind: 'model', provider: 'codex-native', model: 'codex-model' } },
+        stream: [{ type: 'text-chunks', time0: 2, index: 0, dt: [], texts: ['I inspected it'] }],
+      },
+    })
   })
 
   it('keeps a native tool call and result in the same completed turn', () => {
@@ -35,6 +41,14 @@ describe('buildDshSeed', () => {
       'step/start', 'assistant/message', 'step/end', 'turn/end',
     ])
     expect(seed[5]).toMatchObject({ surfaceOp: 'append', data: { message: { source: { kind: 'tool', callId: 'call-1' } } } })
+    expect(seed[3]).toMatchObject({
+      data: {
+        stream: [
+          { type: 'text-chunks', texts: ['I will run it'] },
+          { type: 'tool-call-chunks', id: 'call-1', name: 'shell', args: ['{"cmd":"pnpm test"}'] },
+        ],
+      },
+    })
     expect(seed[8]).toMatchObject({ data: { step: 2 } })
   })
 
