@@ -2,6 +2,11 @@
 
 将已有的 Codex 或 Claude Code 会话带入 DSH，并由 DSH Agent 接续后续对话。
 
+## DSH 兼容性
+
+- 支持的 DSH 版本：[`0.1.2-rc.1`](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.2-rc.1)
+- 当前支持的最新 DSH 版本发布日期：2026 年 9 月 3 日
+
 ## 功能
 
 - 发现本机上的 Codex、Claude Code CLI 和 Claude Code Desktop 会话。

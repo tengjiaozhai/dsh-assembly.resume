@@ -3,6 +3,11 @@
 Bring an existing Codex or Claude Code conversation into DSH, then continue it
 with the DSH Agent.
 
+## DSH Compatibility
+
+- Supported DSH version: [`0.1.2-rc.1`](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.2-rc.1)
+- Release date of the latest supported DSH version: September 3, 2026
+
 ## What It Does
 
 - Finds local conversations from Codex, Claude Code CLI, and Claude Code Desktop.
