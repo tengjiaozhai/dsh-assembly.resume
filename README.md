@@ -5,8 +5,7 @@ with the DSH Agent.
 
 ## DSH Compatibility
 
-- Supported DSH version: [`0.1.2-rc.1`](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.2-rc.1)
-- Release date of the latest supported DSH version: September 3, 2026
+- Supported DSH version: [`0.1.2-rc.1`](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.2-rc.1) (Sep.3)
 
 ## What It Does
 
