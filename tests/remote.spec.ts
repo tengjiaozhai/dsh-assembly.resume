@@ -17,4 +17,18 @@ describe('session-resume Remote descriptor', () => {
       expect(descriptor.scope).toEqual({ context: 'agent', wire: 'agentId' })
     }
   })
+
+  it('provides a create factory on strict codecs for DSH typert-loader compatibility', () => {
+    for (const descriptor of TYPERT_REMOTE.descriptors) {
+      if (descriptor.result?.mode === 'strict') {
+        expect(typeof (descriptor.result as { create?: unknown }).create).toBe('function')
+      }
+      for (const param of descriptor.parameters) {
+        if (param.codec?.mode === 'strict') {
+          expect(typeof (param.codec as { create?: unknown }).create).toBe('function')
+        }
+      }
+    }
+  })
 })
+
